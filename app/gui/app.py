@@ -70,7 +70,8 @@ def create_gui(pipeline, config):
         box-shadow: 0 4px 15px rgba(108, 92, 231, 0.4) !important;
         transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
         font-size: 1.1rem !important;
-        padding: 0.75rem 1.5rem !important;
+        padding: 1.25rem 1.5rem !important;
+        margin-top: 15px !important;
     }
     
     .btn-generate:hover {
@@ -88,6 +89,8 @@ def create_gui(pipeline, config):
         box-shadow: 0 4px 15px rgba(0, 184, 148, 0.4) !important;
         transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
         font-size: 1.1rem !important;
+        padding: 1.25rem 1.5rem !important;
+        margin-top: 15px !important;
     }
     
     .btn-upscale:hover {
@@ -141,13 +144,13 @@ def create_gui(pipeline, config):
     """
 
     with gr.Blocks(css=custom_css, title="SD Local Studio") as demo:
-        # States
         current_artifacts = gr.State([])
+        variations_artifacts = gr.State([])
         selected_artifact = gr.State(None)
         
-        with gr.Div(elem_classes="container"):
+        with gr.Column(elem_classes="container"):
             # Header
-            with gr.Div(elem_classes="title-banner"):
+            with gr.Column(elem_classes="title-banner"):
                 gr.Markdown(
                     "<h1>🎨 Stable Diffusion 1.5 Local Studio</h1>"
                     "<p>RTX 2070 Super Powered Dual-Phase Image Generator and AI Upscaler</p>"
@@ -178,8 +181,8 @@ def create_gui(pipeline, config):
                         )
                     
                     with gr.Row():
-                        steps = gr.Slider(minimum=10, maximum=50, step=1, value=25, label="Steps")
-                        cfg_scale = gr.Slider(minimum=1.0, maximum=20.0, step=0.5, value=7.0, label="CFG Scale")
+                        steps = gr.Slider(minimum=10, maximum=150, step=1, value=40, label="Steps")
+                        cfg_scale = gr.Slider(minimum=1.0, maximum=30.0, step=0.5, value=9.0, label="CFG Scale")
                         
                     with gr.Row():
                         batch_size = gr.Slider(
@@ -189,10 +192,21 @@ def create_gui(pipeline, config):
                             value=config.default_batch_size, 
                             label="Batch Size (Phase 1)"
                         )
-                        seed = gr.Number(
-                            value=-1, 
-                            precision=0, 
-                            label="Seed (-1 for random)"
+                        with gr.Column(scale=1):
+                            with gr.Row():
+                                seed = gr.Number(
+                                    value=-1, 
+                                    precision=0, 
+                                    label="Seed (-1 for random)",
+                                    scale=4
+                                )
+                                btn_reset_seed = gr.Button("🎲 Random", scale=1, min_width=80)
+                        
+                    with gr.Row():
+                        sampler = gr.Dropdown(
+                            choices=["PNDM (Default)", "DPM++ 2M SDE Karras"],
+                            value="DPM++ 2M SDE Karras",
+                            label="Sampler"
                         )
                         
                     with gr.Row():
@@ -234,7 +248,7 @@ def create_gui(pipeline, config):
                 # Right Column: Phase 1 Gallery & Phase 2 Upscaler
                 with gr.Column(scale=6):
                     # Phase 1 Results
-                    with gr.Div(elem_classes="card-panel", style="margin-bottom: 1.5rem;"):
+                    with gr.Column(elem_classes="card-panel"):
                         gr.Markdown("### 🖼️ Phase 1: Batch Gallery")
                         gr.Markdown("*Click an image inside the gallery to select it for upscaling.*")
                         
@@ -253,9 +267,34 @@ def create_gui(pipeline, config):
                             value="Ready. Set parameters and click Generate.", 
                             interactive=False
                         )
+                        
+                    # Phase 1 Variations
+                    with gr.Column(elem_classes="card-panel"):
+                        gr.Markdown("### 🎲 Variations Gallery")
+                        gr.Markdown("*Generate intelligent subseed variations of your selected image.*")
+                        
+                        with gr.Row():
+                            var_batch_size = gr.Slider(
+                                minimum=1, 
+                                maximum=config.max_batch_size, 
+                                step=1, 
+                                value=config.default_batch_size, 
+                                label="Variation Batch Size"
+                            )
+                            btn_variations = gr.Button("🎲 Generate Variations", interactive=False, elem_classes="btn-generate")
+                        
+                        variations_gallery = gr.Gallery(
+                            label="Variations", 
+                            show_label=False, 
+                            columns=2, 
+                            rows=2, 
+                            height="auto",
+                            elem_classes="gallery-preview",
+                            interactive=True
+                        )
 
                     # Selected Image Preview & Phase 2
-                    with gr.Div(elem_classes="card-panel"):
+                    with gr.Column(elem_classes="card-panel"):
                         gr.Markdown("### 🔍 Phase 2: AI High-Res & Upscaler")
                         
                         with gr.Row():
@@ -272,12 +311,12 @@ def create_gui(pipeline, config):
                             with gr.Column(scale=5):
                                 target_res = gr.Dropdown(
                                     choices=["1080p", "2K", "4K"], 
-                                    value="1080p", 
+                                    value="2K", 
                                     label="Target Resolution"
                                 )
                                 upscale_mode = gr.Radio(
                                     choices=[("Quick (Real-ESRGAN x4)", "quick"), ("Quality (ESRGAN + ControlNet)", "quality")], 
-                                    value="quality", 
+                                    value="quick", 
                                     label="Upscale Mode"
                                 )
                                 denoise_strength = gr.Slider(
@@ -294,11 +333,31 @@ def create_gui(pipeline, config):
                                     value=1.0, 
                                     label="ControlNet Guide Weight"
                                 )
+                                usd_padding = gr.Slider(
+                                    minimum=0,
+                                    maximum=128,
+                                    step=8,
+                                    value=32,
+                                    label="Tile Padding (Overlap)"
+                                )
+                                usd_seams_mode = gr.Dropdown(
+                                    choices=["None", "Band Pass", "Half Tile", "Half Tile + Intersections"],
+                                    value="Half Tile",
+                                    label="Seams Fix Mode"
+                                )
+                                usd_seams_denoise = gr.Slider(
+                                    minimum=0.1,
+                                    maximum=0.7,
+                                    step=0.05,
+                                    value=0.35,
+                                    label="Seams Fix Denoise Strength"
+                                )
 
-                        btn_upscale = gr.Button("💎 Run Phase 2 Upscale", elem_classes="btn-upscale")
+                        btn_upscale = gr.Button("💎 Run Phase 2 Upscale", elem_classes="btn-upscale", interactive=False)
+                        btn_cancel_upscale = gr.Button("❌ Cancel Upscale", elem_classes="btn-cancel", visible=False)
 
             # Bottom Panel: Phase 2 Output
-            with gr.Row(equal_height=False, style="margin-top: 1.5rem;"):
+            with gr.Row(equal_height=False):
                 with gr.Column(scale=10, elem_classes="card-panel"):
                     gr.Markdown("### 🏆 Phase 2: Final High-Resolution Output")
                     
@@ -316,7 +375,7 @@ def create_gui(pipeline, config):
         
         # 1. Update VRAM Stats
         def get_vram_usage():
-            if torch.cuda.is_available():
+            if torch.cuda.is_available() and torch.cuda.device_count() > 0:
                 allocated = torch.cuda.memory_allocated(0) / (1024 ** 3)
                 max_allocated = torch.cuda.max_memory_allocated(0) / (1024 ** 3)
                 return f"**GPU VRAM**: Allocated: {allocated:.2f} GB | Peak: {max_allocated:.2f} GB"
@@ -333,6 +392,7 @@ def create_gui(pipeline, config):
             w,
             h,
             seed_val,
+            sampler_val,
             fmt,
             jpg_q,
             progress=gr.Progress(track_tqdm=False)
@@ -341,8 +401,8 @@ def create_gui(pipeline, config):
             cleanup_manager.cleanup_previous_run()
             
             # Reset peak memory stats for accuracy
-            if torch.cuda.is_available():
-                torch.cuda.reset_peak_memory_stats(0)
+            if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+                torch.cuda.reset_peak_memory_stats()
 
             # Determine negative prompt
             neg_parts = []
@@ -366,7 +426,8 @@ def create_gui(pipeline, config):
                 width=w,
                 height=h,
                 seed=seed_arg,
-                batch_size=batch_sz
+                batch_size=batch_sz,
+                sampler=sampler_val
             )
 
             # Run with callback
@@ -387,7 +448,9 @@ def create_gui(pipeline, config):
                         None, 
                         "*Generation returned no images (possibly cancelled)*", 
                         "Cancelled or failed.",
-                        get_vram_usage()
+                        get_vram_usage(),
+                        gr.update(interactive=False),
+                        seed_val
                     )
 
                 paths = [art.path for art in artifacts]
@@ -403,7 +466,11 @@ def create_gui(pipeline, config):
                     first_art.path,   # for selected_preview
                     info_text,        # for selection_info markdown
                     status,           # for status_bar
-                    get_vram_usage()  # for VRAM text
+                    get_vram_usage(), # for VRAM text
+                    gr.update(interactive=True), # enable upscale button
+                    first_art.seed,   # update seed
+                    batch_sz,         # update var_batch_size to match
+                    None              # reset variations gallery
                 )
             except Exception as e:
                 # Check for user cancellation
@@ -415,9 +482,68 @@ def create_gui(pipeline, config):
                         None, 
                         "*Generation cancelled*", 
                         "Task cancelled by user.",
-                        get_vram_usage()
+                        get_vram_usage(),
+                        gr.update(interactive=False),
+                        seed_val,
+                        batch_sz,
+                        None
                     )
                 raise e
+
+        # 2.5 Variations UI Function
+        def run_variations_ui(
+            sel_art, prompt_text, use_baked_neg, custom_neg, step_count, cfg, var_batch_sz, w, h, sampler_val, fmt, jpg_q, progress=gr.Progress(track_tqdm=False)
+        ):
+            if sel_art is None:
+                return [], [], None, None, "*No image selected for variations*", "Failed.", get_vram_usage()
+
+            neg_parts = []
+            if use_baked_neg:
+                neg_parts.append(config.default_negative_prompt)
+            if custom_neg.strip():
+                neg_parts.append(custom_neg.strip())
+            final_neg_prompt = ", ".join(neg_parts)
+
+            params = GenerationParams(
+                prompt=prompt_text, negative_prompt=final_neg_prompt, steps=step_count, cfg_scale=cfg, 
+                width=w, height=h, seed=sel_art.seed, batch_size=var_batch_sz, sampler=sampler_val
+            )
+
+            def progress_callback(pct, desc): progress(pct, desc=desc)
+
+            try:
+                config.output_format = fmt
+                config.jpeg_quality = jpg_q
+                artifacts = pipeline.run_phase1(params, progress_callback=progress_callback)
+                if not artifacts:
+                    return [], [], None, None, "*Variation generation failed*", "Failed.", get_vram_usage()
+                paths = [art.path for art in artifacts]
+                first_art = artifacts[0]
+                status = f"Variations generated successfully."
+                info_text = f"**Selected**: Variation #1\n**Base Seed**: {first_art.seed}\n**Res**: {first_art.width}x{first_art.height}\n**File**: {os.path.basename(first_art.path)}"
+                return paths, artifacts, first_art, first_art.path, info_text, status, get_vram_usage()
+            except Exception as e:
+                if "Cancelled" in str(e) or pipeline.cancel_event.is_set():
+                    return [], [], None, None, "*Variations cancelled*", "Cancelled.", get_vram_usage()
+                raise e
+
+        btn_variations.click(
+            fn=run_variations_ui,
+            inputs=[
+                selected_artifact, prompt, use_baked_neg, negative_prompt, steps, cfg_scale, 
+                var_batch_size, width, height, sampler, output_format, jpeg_quality
+            ],
+            outputs=[
+                variations_gallery, variations_artifacts, selected_artifact, selected_preview, 
+                selection_info, status_bar, vram_text
+            ]
+        )
+
+        btn_reset_seed.click(
+            fn=lambda: -1,
+            inputs=[],
+            outputs=[seed]
+        )
 
         btn_generate.click(
             fn=run_phase1_ui,
@@ -431,6 +557,7 @@ def create_gui(pipeline, config):
                 width,
                 height,
                 seed,
+                sampler,
                 output_format,
                 jpeg_quality
             ],
@@ -441,14 +568,18 @@ def create_gui(pipeline, config):
                 selected_preview,
                 selection_info,
                 status_bar,
-                vram_text
+                vram_text,
+                btn_upscale,
+                seed,
+                var_batch_size,
+                variations_gallery
             ]
         )
 
         # 3. Gallery Select Item Function
         def on_gallery_select(evt: gr.SelectData, artifacts):
             if not artifacts or evt.index >= len(artifacts):
-                return None, None, "*No image selected*", get_vram_usage()
+                return None, None, "*No image selected*", get_vram_usage(), gr.skip(), gr.update(interactive=False)
             
             selected = artifacts[evt.index]
             info_text = f"**Selected**: Image #{evt.index + 1}\n**Seed**: {selected.seed}\n**Res**: {selected.width}x{selected.height}\n**File**: {os.path.basename(selected.path)}"
@@ -456,8 +587,10 @@ def create_gui(pipeline, config):
             return (
                 selected,        # update selected_artifact state
                 selected.path,   # update selected_preview Image
-                info_text,        # update selection_info markdown
-                get_vram_usage()  # update VRAM display
+                info_text,       # update selection_info markdown
+                get_vram_usage(),# update VRAM display
+                selected.seed,   # update seed input dynamically
+                gr.update(interactive=True) # enable btn_variations
             )
 
         gallery.select(
@@ -467,7 +600,22 @@ def create_gui(pipeline, config):
                 selected_artifact,
                 selected_preview,
                 selection_info,
-                vram_text
+                vram_text,
+                seed,
+                btn_variations
+            ]
+        )
+
+        variations_gallery.select(
+            fn=on_gallery_select,
+            inputs=[variations_artifacts],
+            outputs=[
+                selected_artifact,
+                selected_preview,
+                selection_info,
+                vram_text,
+                seed,
+                btn_variations
             ]
         )
 
@@ -477,7 +625,6 @@ def create_gui(pipeline, config):
                 return "Error: No image selected. Please click an image in the gallery first."
             
             saved_path = pipeline.save_phase1_image(art)
-            filename = os.path.basename(saved_path)
             return f"Success: Saved Phase 1 image permanently to '{saved_path}'"
 
         btn_save_p1.click(
@@ -493,6 +640,9 @@ def create_gui(pipeline, config):
             mode,
             denoise,
             scale,
+            usd_pad,
+            usd_s_mode,
+            usd_s_denoise,
             fmt,
             jpg_q,
             progress=gr.Progress(track_tqdm=False)
@@ -506,14 +656,17 @@ def create_gui(pipeline, config):
                 )
 
             # Reset peak VRAM stats
-            if torch.cuda.is_available():
-                torch.cuda.reset_peak_memory_stats(0)
+            if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+                torch.cuda.reset_peak_memory_stats()
 
             upscale_params = UpscaleParams(
                 target_res=res,
                 mode=mode,
                 denoise_strength=denoise,
                 controlnet_scale=scale,
+                usd_padding=usd_pad,
+                usd_seams_mode=usd_s_mode,
+                usd_seams_denoise=usd_s_denoise,
                 output_format=fmt,
                 jpeg_quality=jpg_q
             )
@@ -569,6 +722,9 @@ def create_gui(pipeline, config):
                 raise e
 
         btn_upscale.click(
+            fn=lambda: (gr.update(visible=False), gr.update(visible=True), gr.update(interactive=False)),
+            outputs=[btn_upscale, btn_cancel_upscale, gallery]
+        ).then(
             fn=run_phase2_ui,
             inputs=[
                 selected_artifact,
@@ -576,6 +732,9 @@ def create_gui(pipeline, config):
                 upscale_mode,
                 denoise_strength,
                 controlnet_scale,
+                usd_padding,
+                usd_seams_mode,
+                usd_seams_denoise,
                 output_format,
                 jpeg_quality
             ],
@@ -586,12 +745,20 @@ def create_gui(pipeline, config):
                 status_bar,
                 vram_text
             ]
+        ).then(
+            fn=lambda: (gr.update(visible=True), gr.update(visible=False), gr.update(interactive=True)),
+            outputs=[btn_upscale, btn_cancel_upscale, gallery]
         )
-
         # 6. Cancel Handler
         def cancel_task():
             pipeline.cancel_current_task()
             return "Cancellation requested. Halting running tasks..."
+
+        btn_cancel_upscale.click(
+            fn=cancel_task,
+            inputs=[],
+            outputs=[status_bar]
+        )
 
         btn_cancel.click(
             fn=cancel_task,

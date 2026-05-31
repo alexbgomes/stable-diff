@@ -14,20 +14,28 @@ class PipelineConfig:
     auto_cleanup: bool = True
 
     # Model Configuration
-    model_dir: str = os.getenv("SD_MODEL_DIR", "B:/AIModels/StableDiffusion/")
-    model_id: str = "runwayml/stable-diffusion-v1-5"
+    # model_dir: str = os.getenv("SD_MODEL_DIR", "B:/AIModels/StableDiffusion/")
+    # model_id: str = "runwayml/stable-diffusion-v1-5"
+    model_dir: str = os.getenv("SD_MODEL_DIR", "B:/AIModels/stableDiffusion/CivitaiSafeTensors/")
+    model_id: str = "B:/AIModels/StableDiffusion/CivitaiSafeTensors/cyberrealistic_final.safetensors"
     controlnet_model_id: str = "lllyasviel/control_v11f1e_sd15_tile"
 
     # Generation Defaults
     default_batch_size: int = 4
     max_batch_size: int = 16
-    default_width: int = 768
-    default_height: int = 512
+    default_width: int = 512
+    default_height: int = 768
 
     # Quality-boosting negative prompts
     default_negative_prompt: str = (
         "monochrome, lowres, bad anatomy, worst quality, low quality, "
         "blurry, deformed, mutated, disfigured, extra limbs, bad proportions"
+        "lowres, text, error, cropped, worst quality, low quality, jpeg artifacts"
+        "ugly, duplicate, morbid, mutilated, out of frame, extra fingers, mutated hands" 
+        "poorly drawn hands, poorly drawn face, mutation, deformed, blurry, dehydrated" 
+        "bad proportions, extra limbs, cloned face, disfigured, gross proportions, malformed limbs"
+        "missing arms, missing legs, extra arms, extra legs, fused fingers, too many fingers, long neck" 
+        "username, watermark, signature"
     )
 
     # Output parameters
@@ -36,4 +44,4 @@ class PipelineConfig:
 
     # Tiling configuration for VRAM management
     tile_size: int = 512
-    tile_overlap: int = 96
+    tile_overlap: int = 96

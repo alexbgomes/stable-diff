@@ -6,7 +6,7 @@ from app.core.models import ImageArtifact, UpscaleParams
 from app.storage.file_manager import FileManager
 from app.engine.sd_client import DiffusersSDClient as SDClient
 from app.engine.realesrgan_upscaler import RealESRGANUpscaler
-from app.engine.tile_processor import TileProcessor
+from app.engine.ultimate_upscaler import UltimateUpscaler
 
 
 class Phase2Upscaler:
@@ -39,14 +39,29 @@ class Phase2Upscaler:
         
         return resized.crop((left, top, right, bottom))
 
-    def _get_target_dimensions(self, resolution_preset: str) -> tuple[int, int]:
-        """Maps preset to width and height."""
-        presets = {
-            "1080p": (1920, 1080),
-            "2K": (2560, 1440),
-            "4K": (3840, 2160)
+    def _get_target_dimensions(self, img: Image.Image, resolution_preset: str) -> tuple[int, int]:
+        """Calculates target dimensions preserving original aspect ratio, scaled to match preset's long edge."""
+        orig_w, orig_h = img.size
+        
+        long_edges = {
+            "1080p": 1920,
+            "2K": 2560,
+            "4K": 3840
         }
-        return presets.get(resolution_preset, (1920, 1080))
+        
+        target_long_edge = long_edges.get(resolution_preset, 1920)
+        
+        orig_long = max(orig_w, orig_h)
+        scale = target_long_edge / orig_long
+        
+        new_w = int(orig_w * scale)
+        new_h = int(orig_h * scale)
+        
+        # Snap to nearest multiple of 8 for VAE/ControlNet compatibility
+        new_w = (new_w // 8) * 8
+        new_h = (new_h // 8) * 8
+        
+        return new_w, new_h
 
     def upscale(
         self,
@@ -59,13 +74,14 @@ class Phase2Upscaler:
         Performs Phase 2 upscaling on the selected artifact.
         Supports Quick (Real-ESRGAN) and Quality (Real-ESRGAN + ControlNet Tile) modes.
         """
-        target_w, target_h = self._get_target_dimensions(params.target_res)
-        
         if progress_callback:
             progress_callback(0.01, "Loading source image...")
             
         # 1. Load image
         img = self.storage.load(artifact.path)
+        
+        # Calculate target dimensions dynamically based on original image
+        target_w, target_h = self._get_target_dimensions(img, params.target_res)
         
         # 2. Run Real-ESRGAN 4x upscale (common to both modes)
         if progress_callback:
@@ -129,14 +145,14 @@ class Phase2Upscaler:
             self.client.unload_pipelines()
             return artifact
 
-        # Set up tile processor
-        tile_proc = TileProcessor(
+        # Set up ultimate upscaler
+        tile_proc = UltimateUpscaler(
             tile_size=self.config.tile_size,
-            overlap=self.config.tile_overlap
+            padding=params.usd_padding
         )
         
         def tile_process_fn(tile_pil: Image.Image) -> Image.Image:
-            # Denoise step is run inside client
+            # Main redraw using ControlNet Tile Img2Img
             return self.client.controlnet_tile_refine(
                 image=tile_pil,
                 prompt=artifact.prompt,
@@ -147,16 +163,31 @@ class Phase2Upscaler:
                 cancel_event=cancel_event
             )
             
+        def seam_process_fn(tile_pil: Image.Image, mask_pil: Image.Image) -> Image.Image:
+            # Seams Fix using ControlNet Tile Inpaint
+            return self.client.controlnet_tile_inpaint(
+                image=tile_pil,
+                mask_image=mask_pil,
+                prompt=artifact.prompt,
+                negative_prompt=self.config.default_negative_prompt,
+                denoise_strength=params.usd_seams_denoise,
+                controlnet_scale=params.controlnet_scale,
+                steps=20,
+                cancel_event=cancel_event
+            )
+            
         def tile_progress(progress_val, desc):
             if progress_callback:
                 # Map 0.0-1.0 tiling progress to 0.30-0.95 overall progress
                 overall = 0.30 + (progress_val * 0.65)
-                progress_callback(overall, f"ControlNet refinement: {desc}")
+                progress_callback(overall, f"Ultimate Upscaler: {desc}")
                 
         try:
-            refined_img = tile_proc.process_tiles(
-                resized_img,
-                tile_process_fn,
+            refined_img = tile_proc.process(
+                image=resized_img,
+                tile_process_fn=tile_process_fn,
+                seam_process_fn=seam_process_fn,
+                seams_mode=params.usd_seams_mode,
                 progress_callback=tile_progress
             )
         finally:

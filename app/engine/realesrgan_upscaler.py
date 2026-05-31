@@ -68,7 +68,7 @@ class RRDBNet(nn.Module):
 class RealESRGANUpscaler:
     def __init__(self, config):
         self.config = config
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = "cuda" if torch.cuda.is_available() and torch.cuda.device_count() > 0 else "cpu"
         self.model = None
         self.weights_url = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth"
         

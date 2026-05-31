@@ -13,20 +13,24 @@ class TargetResolution(Enum):
 class GenerationParams:
     prompt: str
     negative_prompt: str = ""
-    steps: int = 25
-    cfg_scale: float = 7.0
-    width: int = 768
-    height: int = 512
+    steps: int = 40
+    cfg_scale: float = 9.0
+    width: int = 512
+    height: int = 768
     seed: Optional[int] = None
     batch_size: int = 4
+    sampler: str = "DPM++ 2M SDE Karras"
 
 
 @dataclass
 class UpscaleParams:
-    target_res: str = "1080p"  # "1080p", "2K", "4K"
-    mode: str = "quality"      # "quick" or "quality"
+    target_res: str = "2K"  # "1080p", "2K", "4K"
+    mode: str = "quick"      # "quick" or "quality"
     denoise_strength: float = 0.3
     controlnet_scale: float = 1.0
+    usd_padding: int = 32
+    usd_seams_mode: str = "Half Tile"
+    usd_seams_denoise: float = 0.35
     output_format: str = "png"  # "png" or "jpeg"
     jpeg_quality: int = 85
 
