@@ -56,7 +56,7 @@ def create_gui(pipeline, config):
         background: rgba(18, 19, 28, 0.6) !important;
         border-radius: 16px !important;
         border: 1px solid rgba(255, 255, 255, 0.06) !important;
-        backdrop-filter: blur(12px);
+        /* backdrop-filter: blur(12px); removed to fix modal clipping */
         padding: 1.5rem !important;
         box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2) !important;
     }
@@ -200,7 +200,7 @@ def create_gui(pipeline, config):
                                     label="Seed (-1 for random)",
                                     scale=4
                                 )
-                                btn_reset_seed = gr.Button("🎲 Random", scale=1, min_width=80)
+                                btn_reset_seed = gr.Button("🎲", scale=0, min_width=40, elem_classes="tool")
                         
                     with gr.Row():
                         sampler = gr.Dropdown(
@@ -234,6 +234,34 @@ def create_gui(pipeline, config):
                             step=5, 
                             label="JPEG Quality (if selected)"
                         )
+
+                    
+                    with gr.Accordion("Dynamic Checkpoint Merging", open=False):
+                        safetensors_dir_input = gr.Textbox(
+                            label="Safetensors Directory",
+                            value=config.model_dir
+                        )
+                        btn_load_dir = gr.Button("🔄 Refresh Directory")
+                        
+                        checkpoint_rows = []
+                        checkpoint_checkboxes = []
+                        checkpoint_sliders = []
+                        checkpoint_paths = []
+                        
+                        MAX_CHECKPOINTS = 15
+                        for i in range(MAX_CHECKPOINTS):
+                            with gr.Column(visible=False, variant="panel") as row:
+                                cb = gr.Checkbox(label=f"Checkpoint {i+1}", value=False)
+                                sl = gr.Slider(minimum=0.0, maximum=2.0, step=0.05, value=1.0, label="Weight", visible=False)
+                                path_state = gr.State("")
+                            checkpoint_rows.append(row)
+                            checkpoint_checkboxes.append(cb)
+                            checkpoint_sliders.append(sl)
+                            checkpoint_paths.append(path_state)
+                            
+                            def toggle_slider(is_checked):
+                                return gr.update(visible=is_checked)
+                            cb.change(toggle_slider, inputs=[cb], outputs=[sl])
 
                     btn_generate = gr.Button("🚀 Generate Phase 1 Batch", elem_classes="btn-generate")
                     btn_cancel = gr.Button("❌ Cancel Current Task", elem_classes="btn-cancel")
@@ -279,9 +307,10 @@ def create_gui(pipeline, config):
                                 maximum=config.max_batch_size, 
                                 step=1, 
                                 value=config.default_batch_size, 
-                                label="Variation Batch Size"
+                                label="Variation Batch Size",
+                                scale=4
                             )
-                            btn_variations = gr.Button("🎲 Generate Variations", interactive=False, elem_classes="btn-generate")
+                            btn_variations = gr.Button("▶️", interactive=False, scale=0, min_width=40, elem_classes="tool")
                         
                         variations_gallery = gr.Gallery(
                             label="Variations", 
@@ -371,8 +400,66 @@ def create_gui(pipeline, config):
                             final_details = gr.Markdown("No upscaled image yet. Complete Phase 1 and run Phase 2.")
                             file_download = gr.File(label="Download Image File", interactive=False)
 
+            # New Gallery Panel: Past Jobs
+            with gr.Row():
+                with gr.Column(elem_classes="card-panel"):
+                    with gr.Row():
+                        gr.Markdown("### 📁 Past Jobs History")
+                        btn_refresh_history = gr.Button("👀 See Past Jobs", scale=0, min_width=150)
+                    history_gallery = gr.Gallery(
+                        label="Saved Images", 
+                        show_label=False, 
+                        elem_id="history_gallery", 
+                        columns=[2, 3, 4], 
+                        rows=[2], 
+                        object_fit="contain",
+                        height="auto"
+                    )
+
         # Logic / Event Handlers
         
+        
+        def refresh_safetensors(dir_path):
+            import glob
+            import os
+            files = glob.glob(os.path.join(dir_path, "*.safetensors"))
+            files.extend(glob.glob(os.path.join(dir_path, "*.ckpt")))
+            
+            default_path = os.path.normcase(os.path.normpath(config.default_model)) if hasattr(config, 'default_model') else ""
+            default_found = False
+            for f in files:
+                if os.path.normcase(os.path.normpath(f)) == default_path:
+                    default_found = True
+                    break
+                    
+            updates = []
+            for i in range(MAX_CHECKPOINTS):
+                if i < len(files):
+                    fpath = files[i]
+                    fname = os.path.basename(fpath)
+                    
+                    if default_found:
+                        is_selected = (os.path.normcase(os.path.normpath(fpath)) == default_path)
+                    else:
+                        is_selected = (i == 0)
+                        
+                    updates.append(gr.update(visible=True)) # row
+                    updates.append(gr.update(label=fname, value=is_selected)) # cb
+                    updates.append(gr.update(visible=is_selected, value=1.0)) # sl
+                    updates.append(fpath) # path state
+                else:
+                    updates.append(gr.update(visible=False))
+                    updates.append(gr.update(value=False))
+                    updates.append(gr.update(visible=False))
+                    updates.append("")
+            return updates
+            
+        btn_load_dir.click(
+            fn=refresh_safetensors,
+            inputs=[safetensors_dir_input],
+            outputs=[item for tuple_ in zip(checkpoint_rows, checkpoint_checkboxes, checkpoint_sliders, checkpoint_paths) for item in tuple_]
+        )
+
         # 1. Update VRAM Stats
         def get_vram_usage():
             if torch.cuda.is_available() and torch.cuda.device_count() > 0:
@@ -395,6 +482,7 @@ def create_gui(pipeline, config):
             sampler_val,
             fmt,
             jpg_q,
+            *dynamic_args,
             progress=gr.Progress(track_tqdm=False)
         ):
             # Clean up previous run first as requested: "Cleanup Manager should try to delete the things from the previous run"
@@ -418,6 +506,23 @@ def create_gui(pipeline, config):
                 seed_arg = None
 
             # Setup params
+            checkpoint_weights = {}
+            if dynamic_args:
+                for i in range(15): # MAX_CHECKPOINTS
+                    cb = dynamic_args[i]
+                    sl = dynamic_args[i + 15]
+                    path = dynamic_args[i + 30]
+                    if cb and path:
+                        checkpoint_weights[path] = sl
+            
+            if not checkpoint_weights:
+                import glob
+                files = glob.glob(os.path.join(config.model_dir, "*.safetensors"))
+                if files:
+                    checkpoint_weights = {files[0]: 1.0}
+                else:
+                    raise Exception(f"No safetensors found in {config.model_dir}")
+
             params = GenerationParams(
                 prompt=prompt_text,
                 negative_prompt=final_neg_prompt,
@@ -427,7 +532,8 @@ def create_gui(pipeline, config):
                 height=h,
                 seed=seed_arg,
                 batch_size=batch_sz,
-                sampler=sampler_val
+                sampler=sampler_val,
+                checkpoint_weights=checkpoint_weights
             )
 
             # Run with callback
@@ -492,7 +598,7 @@ def create_gui(pipeline, config):
 
         # 2.5 Variations UI Function
         def run_variations_ui(
-            sel_art, prompt_text, use_baked_neg, custom_neg, step_count, cfg, var_batch_sz, w, h, sampler_val, fmt, jpg_q, progress=gr.Progress(track_tqdm=False)
+            sel_art, prompt_text, use_baked_neg, custom_neg, step_count, cfg, var_batch_sz, w, h, sampler_val, fmt, jpg_q, *dynamic_args, progress=gr.Progress(track_tqdm=False)
         ):
             if sel_art is None:
                 return [], [], None, None, "*No image selected for variations*", "Failed.", get_vram_usage()
@@ -504,9 +610,27 @@ def create_gui(pipeline, config):
                 neg_parts.append(custom_neg.strip())
             final_neg_prompt = ", ".join(neg_parts)
 
+            checkpoint_weights = {}
+            if dynamic_args:
+                for i in range(15):
+                    cb = dynamic_args[i]
+                    sl = dynamic_args[i + 15]
+                    path = dynamic_args[i + 30]
+                    if cb and path:
+                        checkpoint_weights[path] = sl
+            
+            if not checkpoint_weights:
+                import glob
+                files = glob.glob(os.path.join(config.model_dir, "*.safetensors"))
+                if files:
+                    checkpoint_weights = {files[0]: 1.0}
+                else:
+                    raise Exception(f"No safetensors found in {config.model_dir}")
+
             params = GenerationParams(
                 prompt=prompt_text, negative_prompt=final_neg_prompt, steps=step_count, cfg_scale=cfg, 
-                width=w, height=h, seed=sel_art.seed, batch_size=var_batch_sz, sampler=sampler_val
+                width=w, height=h, seed=sel_art.seed, batch_size=var_batch_sz, sampler=sampler_val,
+                checkpoint_weights=checkpoint_weights
             )
 
             def progress_callback(pct, desc): progress(pct, desc=desc)
@@ -532,7 +656,7 @@ def create_gui(pipeline, config):
             inputs=[
                 selected_artifact, prompt, use_baked_neg, negative_prompt, steps, cfg_scale, 
                 var_batch_size, width, height, sampler, output_format, jpeg_quality
-            ],
+            ] + checkpoint_checkboxes + checkpoint_sliders + checkpoint_paths,
             outputs=[
                 variations_gallery, variations_artifacts, selected_artifact, selected_preview, 
                 selection_info, status_bar, vram_text
@@ -560,7 +684,7 @@ def create_gui(pipeline, config):
                 sampler,
                 output_format,
                 jpeg_quality
-            ],
+            ] + checkpoint_checkboxes + checkpoint_sliders + checkpoint_paths,
             outputs=[
                 gallery,
                 current_artifacts,
@@ -764,6 +888,28 @@ def create_gui(pipeline, config):
             fn=cancel_task,
             inputs=[],
             outputs=[status_bar]
+        )
+
+        def load_history():
+            import glob
+            import os
+            extensions = ('*.png', '*.jpg', '*.jpeg')
+            files = []
+            for ext in extensions:
+                files.extend(glob.glob(os.path.join(config.saved_dir, ext)))
+            files.sort(key=os.path.getmtime, reverse=True)
+            return files, gr.update(value="🔄 Refresh History")
+
+        btn_refresh_history.click(
+            fn=load_history,
+            inputs=[],
+            outputs=[history_gallery, btn_refresh_history]
+        )
+        
+        demo.load(
+            fn=refresh_safetensors,
+            inputs=[safetensors_dir_input],
+            outputs=[item for tuple_ in zip(checkpoint_rows, checkpoint_checkboxes, checkpoint_sliders, checkpoint_paths) for item in tuple_]
         )
 
     return demo

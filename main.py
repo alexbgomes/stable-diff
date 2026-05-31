@@ -92,6 +92,17 @@ def main():
     # Build and launch Gradio GUI
     app = create_gui(pipeline, config)
     app.queue() # Enable queuing for progress bar and multi-user safety
+    
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        print(f"Local URL: http://{local_ip}:{args.port}")
+    except Exception:
+        pass
+
     app.launch(server_name="0.0.0.0", server_port=args.port, share=args.share)
 
 

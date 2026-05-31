@@ -17,7 +17,7 @@ class PipelineConfig:
     # model_dir: str = os.getenv("SD_MODEL_DIR", "B:/AIModels/StableDiffusion/")
     # model_id: str = "runwayml/stable-diffusion-v1-5"
     model_dir: str = os.getenv("SD_MODEL_DIR", "B:/AIModels/stableDiffusion/CivitaiSafeTensors/")
-    model_id: str = "B:/AIModels/StableDiffusion/CivitaiSafeTensors/cyberrealistic_final.safetensors"
+    default_model: str = "B:/AIModels/StableDiffusion/CivitaiSafeTensors/cyberrealistic_final.safetensors"
     controlnet_model_id: str = "lllyasviel/control_v11f1e_sd15_tile"
 
     # Generation Defaults

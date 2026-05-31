@@ -24,9 +24,20 @@ class DiffusersSDClient:
         self.controlnet_pipe = None
         self.inpaint_pipe = None
 
-    def load_txt2img(self, progress_callback=None):
+    def load_txt2img(self, progress_callback=None, checkpoint_weights=None):
         """Loads txt2img pipeline into memory if not loaded, unloading other pipelines."""
-        if self.txt2img_pipe is not None:
+        # Determine if we need to reload
+        needs_reload = False
+        if self.txt2img_pipe is None:
+            needs_reload = True
+        
+        current_state = getattr(self, "_current_loaded_checkpoints", None)
+        target_state = checkpoint_weights
+        
+        if current_state != target_state:
+            needs_reload = True
+
+        if not needs_reload:
             return
 
         self.unload_pipelines()
@@ -34,32 +45,143 @@ class DiffusersSDClient:
         if progress_callback:
             progress_callback(0.05, "Loading Stable Diffusion 1.5 pipeline...")
 
-        print(f"Loading SD1.5 txt2img from {self.config.model_id} (cache: {self.config.model_dir})...")
-        if str(self.config.model_id).endswith((".safetensors", ".ckpt")):
-            if not os.path.isfile(self.config.model_id):
-                raise FileNotFoundError(f"The local model file was not found at '{self.config.model_id}'. Please make sure you have downloaded the file and provided the correct absolute path in config.py.")
+        if not checkpoint_weights:
+            return
+
+        if len(checkpoint_weights) == 1:
+            target_model_id = list(checkpoint_weights.keys())[0]
+            print(f"Loading SD1.5 txt2img from {target_model_id} (cache: {self.config.model_dir})...")
             
-            # Efficiently check if model is pruned of text encoder without loading it into RAM
-            has_text_encoder = False
-            try:
-                from safetensors import safe_open
-                with safe_open(self.config.model_id, framework="pt", device="cpu") as f:
-                    for k in f.keys():
-                        if k.startswith("cond_stage_model"):
-                            has_text_encoder = True
-                            break
-            except Exception:
-                has_text_encoder = True  # Fallback to default loading if parsing fails
+            if str(target_model_id).endswith((".safetensors", ".ckpt")):
+                if not os.path.isfile(target_model_id):
+                    raise FileNotFoundError(f"The local model file was not found at '{target_model_id}'.")
                 
+                has_text_encoder = False
+                try:
+                    from safetensors import safe_open
+                    with safe_open(target_model_id, framework="pt", device="cpu") as f:
+                        for k in f.keys():
+                            if k.startswith("cond_stage_model"):
+                                has_text_encoder = True
+                                break
+                except Exception:
+                    has_text_encoder = True
+                    
+                kwargs = {
+                    "torch_dtype": self.dtype,
+                    "safety_checker": None,
+                    "cache_dir": self.config.model_dir,
+                    "config": "runwayml/stable-diffusion-v1-5",
+                }
+                
+                if not has_text_encoder:
+                    from transformers import CLIPTextModel
+                    text_encoder = CLIPTextModel.from_pretrained(
+                        "runwayml/stable-diffusion-v1-5", 
+                        subfolder="text_encoder", 
+                        cache_dir=self.config.model_dir,
+                        torch_dtype=self.dtype
+                    )
+                    kwargs["text_encoder"] = text_encoder
+    
+                try:
+                    self.txt2img_pipe = StableDiffusionPipeline.from_single_file(
+                        target_model_id,
+                        **kwargs
+                    ).to(self.device)
+                except Exception as e:
+                    if "UNet2DConditionModel" in str(e):
+                        raise RuntimeError(f"Failed to load UNet from {os.path.basename(target_model_id)}. This checkpoint may not be a standard SD 1.5 model and may require an architecture not supported by this studio (e.g., SDXL, Flux, or custom Qwen models). Please select a standard SD 1.5 safetensor.") from e
+                    raise e
+            else:
+                self.txt2img_pipe = StableDiffusionPipeline.from_pretrained(
+                    target_model_id,
+                    torch_dtype=self.dtype,
+                    safety_checker=None,
+                    cache_dir=self.config.model_dir,
+                ).to(self.device)
+    
+            if self.device == "cuda":
+                try:
+                    self.txt2img_pipe.enable_xformers_memory_efficient_attention()
+                except Exception:
+                    print("xformers not installed, falling back to default PyTorch attention.")
+                    
+            self._current_loaded_checkpoints = target_state
+        else:
+            print("Dynamically merging checkpoints...")
+            self._merge_and_load_checkpoints(checkpoint_weights, progress_callback)
+            self._current_loaded_checkpoints = target_state
+
+    def _merge_and_load_checkpoints(self, checkpoint_weights: dict, progress_callback):
+        import gc
+        from safetensors.torch import load_file, save_file
+        import uuid
+        
+        # Normalize weights
+        total_weight = sum(checkpoint_weights.values())
+        if total_weight == 0:
+            total_weight = 1.0
+            
+        merged_state_dict = {}
+        items = list(checkpoint_weights.items())
+        num_models = len(items)
+        
+        for i, (path, weight) in enumerate(items):
+            if progress_callback:
+                progress_callback(0.05 + 0.1 * (i / num_models), f"Merging checkpoint {i+1}/{num_models}...")
+                
+            norm_weight = weight / total_weight
+            print(f"Loading {path} with weight {norm_weight:.3f}")
+            
+            state_dict = load_file(path)
+            
+            if i == 0:
+                for k, v in state_dict.items():
+                    merged_state_dict[k] = v * norm_weight
+            else:
+                for k, v in state_dict.items():
+                    if k in merged_state_dict:
+                        merged_state_dict[k] += v * norm_weight
+                    else:
+                        merged_state_dict[k] = v * norm_weight
+            
+            del state_dict
+            gc.collect()
+            
+        if progress_callback:
+            progress_callback(0.15, "Saving temporary merged checkpoint...")
+            
+        temp_path = os.path.join(self.config.temp_dir, f"temp_merge_{uuid.uuid4().hex}.safetensors")
+        os.makedirs(self.config.temp_dir, exist_ok=True)
+        save_file(merged_state_dict, temp_path)
+        
+        del merged_state_dict
+        gc.collect()
+        
+        if progress_callback:
+            progress_callback(0.2, "Loading pipeline from merged checkpoint...")
+            
+        try:
             kwargs = {
                 "torch_dtype": self.dtype,
                 "safety_checker": None,
                 "cache_dir": self.config.model_dir,
                 "config": "runwayml/stable-diffusion-v1-5",
             }
-            
+            # Fast missing text encoder check
+            has_text_encoder = False
+            try:
+                from safetensors import safe_open
+                with safe_open(temp_path, framework="pt", device="cpu") as f:
+                    for k in f.keys():
+                        if k.startswith("cond_stage_model"):
+                            has_text_encoder = True
+                            break
+            except Exception:
+                has_text_encoder = True
+                
             if not has_text_encoder:
-                print("Text encoder weights missing in safetensors. Pre-fetching base SD1.5 text encoder to prevent OOM...")
                 from transformers import CLIPTextModel
                 text_encoder = CLIPTextModel.from_pretrained(
                     "runwayml/stable-diffusion-v1-5", 
@@ -69,23 +191,24 @@ class DiffusersSDClient:
                 )
                 kwargs["text_encoder"] = text_encoder
 
-            self.txt2img_pipe = StableDiffusionPipeline.from_single_file(
-                self.config.model_id,
-                **kwargs
-            ).to(self.device)
-        else:
-            self.txt2img_pipe = StableDiffusionPipeline.from_pretrained(
-                self.config.model_id,
-                torch_dtype=self.dtype,
-                safety_checker=None,
-                cache_dir=self.config.model_dir,
-            ).to(self.device)
-
-        if self.device == "cuda":
             try:
-                self.txt2img_pipe.enable_xformers_memory_efficient_attention()
-            except Exception:
-                print("xformers not installed, falling back to default PyTorch attention.")
+                self.txt2img_pipe = StableDiffusionPipeline.from_single_file(
+                    temp_path,
+                    **kwargs
+                ).to(self.device)
+            except Exception as e:
+                if "UNet2DConditionModel" in str(e):
+                    raise RuntimeError("Failed to load UNet from merged checkpoints. One or more selected checkpoints may not be a standard SD 1.5 model. Please ensure you are only selecting SD 1.5 safetensors.") from e
+                raise e
+            
+            if self.device == "cuda":
+                try:
+                    self.txt2img_pipe.enable_xformers_memory_efficient_attention()
+                except Exception:
+                    pass
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
     def load_controlnet(self, progress_callback=None):
         """Loads ControlNet Tile pipeline if not loaded, unloading other pipelines."""
@@ -281,7 +404,7 @@ class DiffusersSDClient:
         Generates a batch of images sequentially to prevent OOM.
         Returns a list of tuples containing (PIL Image, seed_used).
         """
-        self.load_txt2img(progress_callback)
+        self.load_txt2img(progress_callback, params.checkpoint_weights)
         if self.txt2img_pipe is not None:
             self._set_scheduler(self.txt2img_pipe, getattr(params, "sampler", "PNDM (Default)"))
         

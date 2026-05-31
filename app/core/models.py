@@ -20,6 +20,7 @@ class GenerationParams:
     seed: Optional[int] = None
     batch_size: int = 4
     sampler: str = "DPM++ 2M SDE Karras"
+    checkpoint_weights: Optional[dict] = None
 
 
 @dataclass
