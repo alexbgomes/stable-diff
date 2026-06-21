@@ -287,7 +287,7 @@ class DiffusersSDClient:
                 print("xformers not installed, falling back to default PyTorch attention.")
             self.controlnet_pipe.enable_vae_tiling()  # Critical for high-res VAE decoding without OOM
 
-    def encode_prompt_long(self, pipe, prompt: str, negative_prompt: str):
+    def encode_prompt_long(self, pipe, prompt: str, negative_prompt: str, clip_skip: int = 1):
         """Encodes prompts up to any length by chunking into 77-token segments to bypass the CLIP limit."""
         tokenizer = pipe.tokenizer
         text_encoder = pipe.text_encoder
@@ -351,7 +351,12 @@ class DiffusersSDClient:
             tensor = torch.tensor(chunks, dtype=torch.long, device=self.device)
             embeds = []
             for batch in tensor:
-                emb = text_encoder(batch.unsqueeze(0))[0]
+                outputs = text_encoder(batch.unsqueeze(0), output_hidden_states=True)
+                if clip_skip is None or clip_skip <= 1:
+                    emb = outputs[0]
+                else:
+                    hidden_state = outputs.hidden_states[-(clip_skip)]
+                    emb = text_encoder.text_model.final_layer_norm(hidden_state)
                 embeds.append(emb)
             return torch.cat(embeds, dim=1)
             
@@ -390,6 +395,12 @@ class DiffusersSDClient:
                 use_karras_sigmas=True,
                 algorithm_type="sde-dpmsolver++"
             )
+        elif sampler_name == "Euler":
+            from diffusers import EulerDiscreteScheduler
+            pipe.scheduler = EulerDiscreteScheduler.from_config(pipe.scheduler.config)
+        elif sampler_name == "Euler A":
+            from diffusers import EulerAncestralDiscreteScheduler
+            pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
         else:
             from diffusers import PNDMScheduler
             pipe.scheduler = PNDMScheduler.from_config(pipe.scheduler.config)
@@ -462,7 +473,7 @@ class DiffusersSDClient:
                     raise RuntimeError("txt2img pipeline failed to load.")
                 
                 prompt_embeds, negative_prompt_embeds = self.encode_prompt_long(
-                    self.txt2img_pipe, params.prompt, params.negative_prompt
+                    self.txt2img_pipe, params.prompt, params.negative_prompt, getattr(params, 'clip_skip', 1)
                 )
                 
                 image = self.txt2img_pipe(
@@ -486,6 +497,74 @@ class DiffusersSDClient:
                 
         return images_and_seeds
 
+    def generate_img2img_batch(
+        self,
+        params: GenerationParams,
+        progress_callback=None,
+        cancel_event=None
+    ) -> List[Tuple[Image.Image, int]]:
+        from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img import StableDiffusionImg2ImgPipeline
+        
+        self.load_txt2img(progress_callback, params.checkpoint_weights)
+        if self.txt2img_pipe is None:
+            raise RuntimeError("txt2img pipeline failed to load.")
+            
+        img2img_pipe = StableDiffusionImg2ImgPipeline(**self.txt2img_pipe.components)
+        self._set_scheduler(img2img_pipe, getattr(params, "sampler", "PNDM (Default)"))
+        
+        base_img = Image.open(params.img2img_base).convert("RGB")
+        # Resize safely to params width/height
+        base_img = base_img.resize((params.width, params.height), Image.LANCZOS)
+        
+        images_and_seeds = []
+        base_seed = params.seed if params.seed is not None else None
+        
+        for i in range(params.batch_size):
+            if cancel_event and cancel_event.is_set():
+                break
+                
+            current_seed = base_seed + i if base_seed is not None else int(torch.randint(0, 2**32 - 1, (1,)).item())
+            generator = torch.Generator(self.device).manual_seed(current_seed)
+            
+            def step_callback(step, timestep, latents):
+                if cancel_event and cancel_event.is_set():
+                    raise RuntimeError("Cancelled")
+                if progress_callback:
+                    current_step = step + 1
+                    # Since img2img starts midway, params.steps is scaled down, but step is still 0-indexed.
+                    progress_val = (i + (current_step / params.steps)) / params.batch_size
+                    progress_val = min(0.99, progress_val)
+                    progress_callback(
+                        progress_val,
+                        f"Generating variation {i+1}/{params.batch_size} (Step {current_step}/{params.steps})..."
+                    )
+
+            try:
+                prompt_embeds, negative_prompt_embeds = self.encode_prompt_long(
+                    img2img_pipe, params.prompt, params.negative_prompt, getattr(params, 'clip_skip', 1)
+                )
+                
+                # We use strength=0.7 for standard variations to tweak it heavily but keep structure roughly
+                image = img2img_pipe(
+                    prompt_embeds=prompt_embeds,
+                    negative_prompt_embeds=negative_prompt_embeds,
+                    image=base_img,
+                    strength=0.75,
+                    num_inference_steps=params.steps,
+                    guidance_scale=params.cfg_scale,
+                    generator=generator,
+                    callback=step_callback,
+                    callback_steps=1
+                ).images[0]
+                
+                images_and_seeds.append((image, current_seed))
+            except RuntimeError as e:
+                if "Cancelled" in str(e):
+                    break
+                raise e
+                
+        return images_and_seeds
+        
     def controlnet_tile_refine(
         self,
         image: Image.Image,

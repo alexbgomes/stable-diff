@@ -204,10 +204,11 @@ def create_gui(pipeline, config):
                         
                     with gr.Row():
                         sampler = gr.Dropdown(
-                            choices=["PNDM (Default)", "DPM++ 2M SDE Karras"],
+                            choices=["PNDM (Default)", "DPM++ 2M SDE Karras", "Euler", "Euler A"],
                             value="DPM++ 2M SDE Karras",
                             label="Sampler"
                         )
+                        clip_skip = gr.Slider(minimum=0, maximum=4, step=1, value=2, label="Clip Skip")
                         
                     with gr.Row():
                         width = gr.Dropdown(
@@ -311,6 +312,11 @@ def create_gui(pipeline, config):
                                 scale=4
                             )
                             btn_variations = gr.Button("▶️", interactive=False, scale=0, min_width=40, elem_classes="tool")
+                            
+                        with gr.Accordion("Variations Tweaks (Img2Img)", open=False):
+                            var_image = gr.Image(label="Upload Base Image (Optional)", type="filepath")
+                            var_prompt = gr.Textbox(label="Variation Prompt Overrides (Optional)", lines=2)
+                            var_neg_prompt = gr.Textbox(label="Variation Negative Prompt Overrides (Optional)", lines=2)
                         
                         variations_gallery = gr.Gallery(
                             label="Variations", 
@@ -329,10 +335,11 @@ def create_gui(pipeline, config):
                         with gr.Row():
                             with gr.Column(scale=5):
                                 selected_preview = gr.Image(
-                                    label="Selected for Phase 2", 
+                                    label="Selected for Phase 2 / Upload Custom", 
                                     show_label=True,
                                     height=300,
-                                    interactive=False
+                                    interactive=True,
+                                    type="filepath"
                                 )
                                 selection_info = gr.Markdown("*No image selected yet. Click one in the gallery above.*")
                                 btn_save_p1 = gr.Button("💾 Save Phase 1 Image (as-is)", elem_classes="btn-save")
@@ -390,6 +397,7 @@ def create_gui(pipeline, config):
                 with gr.Column(scale=10, elem_classes="card-panel"):
                     gr.Markdown("### 🏆 Phase 2: Final High-Resolution Output")
                     
+
                     with gr.Row():
                         with gr.Column(scale=6):
                             final_output = gr.Image(
@@ -482,6 +490,7 @@ def create_gui(pipeline, config):
             sampler_val,
             fmt,
             jpg_q,
+            clip_skip_val,
             *dynamic_args,
             progress=gr.Progress(track_tqdm=False)
         ):
@@ -533,7 +542,8 @@ def create_gui(pipeline, config):
                 seed=seed_arg,
                 batch_size=batch_sz,
                 sampler=sampler_val,
-                checkpoint_weights=checkpoint_weights
+                checkpoint_weights=checkpoint_weights,
+                clip_skip=int(clip_skip_val)
             )
 
             # Run with callback
@@ -598,9 +608,9 @@ def create_gui(pipeline, config):
 
         # 2.5 Variations UI Function
         def run_variations_ui(
-            sel_art, prompt_text, use_baked_neg, custom_neg, step_count, cfg, var_batch_sz, w, h, sampler_val, fmt, jpg_q, *dynamic_args, progress=gr.Progress(track_tqdm=False)
+            sel_art, prompt_text, use_baked_neg, custom_neg, step_count, cfg, var_batch_sz, w, h, sampler_val, fmt, jpg_q, clip_skip_val, var_img, var_prompt, var_neg, *dynamic_args, progress=gr.Progress(track_tqdm=False)
         ):
-            if sel_art is None:
+            if sel_art is None and not var_img:
                 return [], [], None, None, "*No image selected for variations*", "Failed.", get_vram_usage()
 
             neg_parts = []
@@ -627,10 +637,17 @@ def create_gui(pipeline, config):
                 else:
                     raise Exception(f"No safetensors found in {config.model_dir}")
 
+            base_seed = sel_art.seed if sel_art and sel_art.seed is not None else int(torch.randint(0, 2**32 - 1, (1,)).item())
+            
+            final_p = f"{var_prompt}, {prompt_text}" if var_prompt else prompt_text
+            final_n = f"{var_neg}, {final_neg_prompt}" if var_neg else final_neg_prompt
+            
             params = GenerationParams(
-                prompt=prompt_text, negative_prompt=final_neg_prompt, steps=step_count, cfg_scale=cfg, 
-                width=w, height=h, seed=sel_art.seed, batch_size=var_batch_sz, sampler=sampler_val,
-                checkpoint_weights=checkpoint_weights
+                prompt=final_p, negative_prompt=final_n, steps=step_count, cfg_scale=cfg, 
+                width=w, height=h, seed=base_seed, batch_size=var_batch_sz, sampler=sampler_val,
+                checkpoint_weights=checkpoint_weights,
+                clip_skip=int(clip_skip_val),
+                img2img_base=var_img if var_img else (sel_art.path if sel_art else None)
             )
 
             def progress_callback(pct, desc): progress(pct, desc=desc)
@@ -655,7 +672,8 @@ def create_gui(pipeline, config):
             fn=run_variations_ui,
             inputs=[
                 selected_artifact, prompt, use_baked_neg, negative_prompt, steps, cfg_scale, 
-                var_batch_size, width, height, sampler, output_format, jpeg_quality
+                var_batch_size, width, height, sampler, output_format, jpeg_quality,
+                clip_skip, var_image, var_prompt, var_neg_prompt
             ] + checkpoint_checkboxes + checkpoint_sliders + checkpoint_paths,
             outputs=[
                 variations_gallery, variations_artifacts, selected_artifact, selected_preview, 
@@ -683,7 +701,8 @@ def create_gui(pipeline, config):
                 seed,
                 sampler,
                 output_format,
-                jpeg_quality
+                jpeg_quality,
+                clip_skip
             ] + checkpoint_checkboxes + checkpoint_sliders + checkpoint_paths,
             outputs=[
                 gallery,
@@ -703,7 +722,7 @@ def create_gui(pipeline, config):
         # 3. Gallery Select Item Function
         def on_gallery_select(evt: gr.SelectData, artifacts):
             if not artifacts or evt.index >= len(artifacts):
-                return None, None, "*No image selected*", get_vram_usage(), gr.skip(), gr.update(interactive=False)
+                return None, None, None, "*No image selected*", get_vram_usage(), gr.skip(), gr.update(interactive=False)
             
             selected = artifacts[evt.index]
             info_text = f"**Selected**: Image #{evt.index + 1}\n**Seed**: {selected.seed}\n**Res**: {selected.width}x{selected.height}\n**File**: {os.path.basename(selected.path)}"
@@ -711,6 +730,7 @@ def create_gui(pipeline, config):
             return (
                 selected,        # update selected_artifact state
                 selected.path,   # update selected_preview Image
+                selected.path,   # update var_image Image
                 info_text,       # update selection_info markdown
                 get_vram_usage(),# update VRAM display
                 selected.seed,   # update seed input dynamically
@@ -723,6 +743,7 @@ def create_gui(pipeline, config):
             outputs=[
                 selected_artifact,
                 selected_preview,
+                var_image,
                 selection_info,
                 vram_text,
                 seed,
@@ -736,6 +757,7 @@ def create_gui(pipeline, config):
             outputs=[
                 selected_artifact,
                 selected_preview,
+                var_image,
                 selection_info,
                 vram_text,
                 seed,
@@ -760,6 +782,7 @@ def create_gui(pipeline, config):
         # 5. Phase 2 Upscale Function
         def run_phase2_ui(
             art,
+            p2_c_img,
             res,
             mode,
             denoise,
@@ -771,13 +794,20 @@ def create_gui(pipeline, config):
             jpg_q,
             progress=gr.Progress(track_tqdm=False)
         ):
-            if art is None:
+            if art is None and p2_c_img is None:
                 return (
                     None, 
-                    "Error: No image selected. Please run Phase 1 and select an image.", 
+                    "Error: No image selected and no custom image uploaded. Please select or upload an image.", 
                     None,
+                    "Waiting for user input.",
                     get_vram_usage()
                 )
+                
+            if p2_c_img and (art is None or p2_c_img != art.path):
+                from PIL import Image
+                import uuid
+                img = Image.open(p2_c_img)
+                art = ImageArtifact(id=str(uuid.uuid4()), path=p2_c_img, prompt="", phase=1, width=img.width, height=img.height)
 
             # Reset peak VRAM stats
             if torch.cuda.is_available() and torch.cuda.device_count() > 0:
@@ -845,6 +875,12 @@ def create_gui(pipeline, config):
                     )
                 raise e
 
+
+        selected_preview.change(
+            fn=lambda x: gr.update(interactive=True) if x is not None else gr.update(interactive=False),
+            inputs=[selected_preview],
+            outputs=[btn_upscale]
+        )
         btn_upscale.click(
             fn=lambda: (gr.update(visible=False), gr.update(visible=True), gr.update(interactive=False)),
             outputs=[btn_upscale, btn_cancel_upscale, gallery]
@@ -852,6 +888,7 @@ def create_gui(pipeline, config):
             fn=run_phase2_ui,
             inputs=[
                 selected_artifact,
+                selected_preview,
                 target_res,
                 upscale_mode,
                 denoise_strength,

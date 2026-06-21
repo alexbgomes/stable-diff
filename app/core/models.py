@@ -21,6 +21,8 @@ class GenerationParams:
     batch_size: int = 4
     sampler: str = "DPM++ 2M SDE Karras"
     checkpoint_weights: Optional[dict] = None
+    clip_skip: int = 2
+    img2img_base: Optional[str] = None
 
 
 @dataclass

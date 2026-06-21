@@ -21,12 +21,18 @@ class Phase1Generator:
         """
         Generates a batch of images and saves them as Phase 1 artifacts.
         """
-        # Call client to generate batch of PIL images
-        images_and_seeds = self.client.generate_batch(
-            params,
-            progress_callback=progress_callback,
-            cancel_event=cancel_event
-        )
+        if params.img2img_base:
+            images_and_seeds = self.client.generate_img2img_batch(
+                params,
+                progress_callback=progress_callback,
+                cancel_event=cancel_event
+            )
+        else:
+            images_and_seeds = self.client.generate_batch(
+                params,
+                progress_callback=progress_callback,
+                cancel_event=cancel_event
+            )
 
         artifacts = []
         for i, (image, seed) in enumerate(images_and_seeds):

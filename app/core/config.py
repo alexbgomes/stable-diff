@@ -14,10 +14,10 @@ class PipelineConfig:
     auto_cleanup: bool = True
 
     # Model Configuration
-    # model_dir: str = os.getenv("SD_MODEL_DIR", "B:/AIModels/StableDiffusion/")
+    # model_dir: str = os.getenv("SD_MODEL_DIR", "E:/AIModels/StableDiffusion/")
     # model_id: str = "runwayml/stable-diffusion-v1-5"
-    model_dir: str = os.getenv("SD_MODEL_DIR", "B:/AIModels/stableDiffusion/CivitaiSafeTensors/")
-    default_model: str = "B:/AIModels/StableDiffusion/CivitaiSafeTensors/cyberrealistic_final.safetensors"
+    model_dir: str = os.getenv("SD_MODEL_DIR", "E:/AIModels/stableDiffusion/CivitaiSafeTensors/")
+    default_model: str = "E:/AIModels/StableDiffusion/CivitaiSafeTensors/cyberrealistic_final.safetensors"
     controlnet_model_id: str = "lllyasviel/control_v11f1e_sd15_tile"
 
     # Generation Defaults

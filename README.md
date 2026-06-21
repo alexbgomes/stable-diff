@@ -13,7 +13,7 @@ It implements a two-phase generation pipeline:
 - **GPU**: NVIDIA RTX GPU with 8GB VRAM (e.g., RTX 2070 Super).
 - **RAM**: 16GB.
 - **OS**: Windows 10/11.
-- **Storage**: ~7 GB free space on a secondary drive (e.g. `B:`) for HuggingFace model cache, and space on the `C:` drive for outputs.
+- **Storage**: ~7 GB free space on a secondary drive (e.g. `D:`) for HuggingFace model cache, and space on the `C:` drive for outputs.
 
 ---
 
@@ -58,7 +58,7 @@ pip install -r requirements.txt
 
 The application uses a `.env` file in the root directory to locate your model cache directory on the separate drive:
 ```env
-SD_MODEL_DIR=B:/AIModels/StableDiffusion/
+SD_MODEL_DIR=E:/AIModels/StableDiffusion/
 ```
 All downloaded HuggingFace models and weights will be cached here automatically. No manual downloads are necessary!
 
